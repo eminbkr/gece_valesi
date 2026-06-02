@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <title>Gece Valesi - Roma Rakamlı & Prosedürel Dokulu Slotlar</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111; font-family: Arial, sans-serif; user-select: none; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        #ui { position: absolute; top: 15px; left: 15px; background: rgba(10,10,10,0.85); color: white; padding: 20px; border-radius: 8px; width: 350px; border: 1px solid #444; box-shadow: 0 4px 15px rgba(0,0,0,0.9); }
+        h3 { margin-top: 0; color: #f39c12; font-size: 18px; border-bottom: 1px solid #555; padding-bottom: 10px; text-align: center; }
+        
+        .info-box { background: #1a1a1a; padding: 12px; border-radius: 5px; border: 1px solid #333; margin-bottom: 15px; font-size: 13px; line-height: 1.6;}
+        .legend { display: flex; align-items: center; margin-top: 4px; }
+        .color-box { width: 14px; height: 14px; margin-right: 8px; border-radius: 3px; border: 1px solid #000;}
+        .key-hint { display: inline-block; background: #444; padding: 3px 7px; border-radius: 4px; color: #f1c40f; font-weight: bold; border: 1px solid #666; margin-right: 3px;}
+        
+        #scoreBoard { position: absolute; top: 15px; right: 15px; background: rgba(0,0,0,0.8); color: #f1c40f; padding: 15px 25px; border-radius: 8px; font-size: 24px; font-weight: bold; border: 2px solid #f39c12; }
+        #message { position: absolute; top: 85px; right: 15px; color: white; font-weight: bold; font-size: 16px; background: rgba(0,0,0,0.9); padding: 15px; border-radius: 8px; display: none; text-align: center; border: 1px solid white; z-index: 10;}
+        
+        #lampStatus { color: #e74c3c; font-weight: bold; margin-top: 10px; background: #222; padding: 12px; border-radius: 5px; text-align: center; border: 1px solid #555; }
+    </style>
+
+    <script type="text/javascript" src="Common/webgl-utils.js"></script>
+    <script type="text/javascript" src="Common/initShaders.js"></script>
+    <script type="text/javascript" src="Common/MV.js"></script>
+</head>
+<body>
+
+<div id="ui">
+    <h3>Gece Valesi</h3>
+    
+    <div class="info-box">
+        <div class="legend"><div class="color-box" style="background: #e6b800;"></div><b>Sarı:</b> Vale Alanı</div>
+        <div class="legend"><div class="color-box" style="background: #d35400;"></div><b>Turuncu:</b> Vale Slotları (I, II, III)</div>
+        <div class="legend"><div class="color-box" style="background: #4caf50;"></div><b>Yeşil:</b> Aydınlık Bölge</div>
+        <div class="legend"><div class="color-box" style="background: #2980b9;"></div><b>Mavi:</b> Dinamik Park Slotları</div>
+    </div>
+
+    <div class="info-box">
+        <b>Araç Seç:</b> <span class="key-hint">1</span> <span class="key-hint">2</span> <span class="key-hint">3</span> (Soldan Sağa)<br>
+        <b>Aracı Sür:</b> <span class="key-hint">W</span> <span class="key-hint">A</span> <span class="key-hint">S</span> <span class="key-hint">D</span><br>
+        <b>Kamera:</b> <span class="key-hint">M</span> (Takip / Serbest)<br>
+        <b>Park Et:</b> <span class="key-hint">P</span> (Mavi slota girince)
+    </div>
+
+    <div id="lampStatus">
+        Lamba Paneli (Direğe Yaklaşın)
+    </div>
+    
+    <div style="font-size: 11px; color: #888; text-align: center; margin-top: 5px;">
+        <span style="color:#ddd">→</span> ve <span style="color:#ddd">←</span> yön tuşlarıyla park alanını ve mavi slot sayısını artır. (Her seviye -10 Puan)
+    </div>
+</div>
+
+<div id="scoreBoard">Puan: <span id="scoreVal">0</span></div>
+<div id="message"></div>
+
+<canvas id="gl-canvas"></canvas>
+
+<script id="vertex-shader" type="x-shader/x-vertex">
+    attribute vec4 vPosition;
+    attribute vec4 vColor;
+    attribute vec3 vNormal;
+
+    varying vec4 fColor;
+    varying vec3 fNormal;
+    varying vec3 fModelPos; // Doku üretimi için ham model koordinatını taşıyoruz
+    varying float fDist1; 
+    varying float fDist2; 
+    varying float fIsParkZone;
+
+    uniform mat4 modelViewMatrix;
+    uniform mat4 projectionMatrix;
+    uniform vec4 lightPos1; 
+    uniform vec4 lightPos2; 
+    uniform float uIsParkZone; 
+
+    void main() {
+        vec3 pos = (modelViewMatrix * vPosition).xyz;
+        fNormal = (modelViewMatrix * vec4(vNormal, 0.0)).xyz;
+        fColor = vColor;
+        fModelPos = vPosition.xyz; // Model üzerindeki yerel X, Y, Z konumunu aldık
+        fIsParkZone = uIsParkZone;
+
+        fDist1 = length(lightPos1.xyz - pos);
+        fDist2 = length(lightPos2.xyz - pos);
+
+        gl_Position = projectionMatrix * modelViewMatrix * vPosition;
+    }
+</script>
+
+<script id="fragment-shader" type="x-shader/x-fragment">
+    precision mediump float;
+    
+    varying vec4 fColor;
+    varying vec3 fNormal;
+    varying vec3 fModelPos;
+    varying float fDist1;
+    varying float fDist2;
+    varying float fIsParkZone;
+
+    uniform float intensity1; 
+    uniform float intensity2; 
+    uniform float uTextureType; // 0:Yok, 1:Araba(Dama), 2:Kamyon(Çizgi), 3:Moto(Izgara)
+
+    void main() {
+        vec3 N = normalize(fNormal);
+        vec3 L = normalize(vec3(0.5, 1.0, 0.5)); 
+        float diffuse = max(dot(N, L), 0.35); 
+        
+        vec4 ambient;
+        if(fIsParkZone > 0.5) {
+            ambient = vec4(0.04, 0.04, 0.04, 1.0); 
+        } else {
+            ambient = vec4(1.0, 1.0, 1.0, 1.0); 
+        }
+
+        float atten1 = 0.0; float atten2 = 0.0;
+        if(fIsParkZone > 0.5) {
+            atten1 = intensity1 / (1.0 + 0.02 * fDist1 + 0.005 * fDist1 * fDist1);
+            atten2 = intensity2 / (1.0 + 0.02 * fDist2 + 0.005 * fDist2 * fDist2);
+        }
+
+        // --- PROSEDÜREL DOKU (TEXTURE) MOTORU ---
+        vec4 computedColor = fColor;
+        
+        if (uTextureType > 0.5 && uTextureType < 1.5) {
+            // 1. DOKU (ARABA): Matematiksel Dama Tahtası Deseni (Checkerboard)
+            float s = sin(fModelPos.x * 20.0) * sin(fModelPos.y * 20.0) * sin(fModelPos.z * 20.0);
+            if (s > 0.0) {
+                computedColor = vec4(1.0, 1.0, 1.0, 1.0); // Beyaz kareler
+            }
+        } 
+        else if (uTextureType > 1.5 && uTextureType < 2.5) {
+            // 2. DOKU (KAMYON KASASI): Spor Yarış Çizgileri (Stripes)
+            float pattern = step(0.7, sin(fModelPos.z * 15.0));
+            if (pattern > 0.5) {
+                computedColor = vec4(0.9, 0.9, 0.1, 1.0); // Sarı şeritler
+            }
+        }
+        else if (uTextureType > 2.5) {
+            // 3. DOKU (MOTOSİKLET): Noktalı/Izgaralı Yarış Dokusu (Dots/Grid)
+            float pX = step(0.8, sin(fModelPos.x * 30.0));
+            float pZ = step(0.8, sin(fModelPos.z * 30.0));
+            if (pX > 0.5 || pZ > 0.5) {
+                computedColor = vec4(0.1, 0.1, 0.1, 1.0); // Siyah ızgara çizgileri
+            }
+        }
+
+        vec4 baseColor = computedColor * diffuse * ambient;
+        vec4 lightColor = computedColor * (atten1 + atten2); 
+        gl_FragColor = min(baseColor + lightColor, vec4(1.0)); 
+    }
+</script>
+
+<script>
+    let positions = [], normals = [], colors = [];
+    
+    function quad(a, b, c, d, color) {
+        let vertices = [
+            vec4(-0.5, -0.5,  0.5, 1.0), vec4(-0.5,  0.5,  0.5, 1.0), vec4( 0.5,  0.5,  0.5, 1.0), vec4( 0.5, -0.5,  0.5, 1.0),
+            vec4(-0.5, -0.5, -0.5, 1.0), vec4(-0.5,  0.5, -0.5, 1.0), vec4( 0.5,  0.5, -0.5, 1.0), vec4( 0.5, -0.5, -0.5, 1.0)
+        ];
+        
+        let v_a = vec3(vertices[a][0], vertices[a][1], vertices[a][2]);
+        let v_b = vec3(vertices[b][0], vertices[b][1], vertices[b][2]);
+        let v_c = vec3(vertices[c][0], vertices[c][1], vertices[c][2]);
+        
+        let t1 = subtract(v_b, v_a); let t2 = subtract(v_c, v_b);
+        let normal = normalize(cross(t1, t2));
+        
+        let indices = [a, b, c, a, c, d];
+        for (let i = 0; i < indices.length; ++i) {
+            positions.push(vertices[indices[i]][0], vertices[indices[i]][1], vertices[indices[i]][2], vertices[indices[i]][3]);
+            normals.push(normal[0], normal[1], normal[2]); colors.push(color[0], color[1], color[2], color[3]);
+        }
+    }
+    
+    function colorCube(color) {
+        quad(1, 0, 3, 2, color); quad(2, 3, 7, 6, color); quad(3, 0, 4, 7, color);
+        quad(6, 5, 1, 2, color); quad(4, 5, 6, 7, color); quad(5, 4, 0, 1, color);
+    }
+
+    let objOffsets = {};
+    function buildGeometry() {
+        let ptr = 0;
+        objOffsets.brown = { start: ptr, count: 36 }; colorCube(vec4(0.3, 0.2, 0.1, 1.0)); ptr += 36;
+        objOffsets.yellow = { start: ptr, count: 36 }; colorCube(vec4(0.9, 0.72, 0.0, 1.0)); ptr += 36;
+        objOffsets.grey = { start: ptr, count: 36 }; colorCube(vec4(0.33, 0.33, 0.33, 1.0)); ptr += 36;
+        objOffsets.green = { start: ptr, count: 36 }; colorCube(vec4(0.2, 0.5, 0.2, 1.0)); ptr += 36;
+        
+        objOffsets.valetSlot = { start: ptr, count: 36 }; colorCube(vec4(0.83, 0.33, 0.0, 1.0)); ptr += 36; 
+        objOffsets.parkSlot = { start: ptr, count: 36 }; colorCube(vec4(0.16, 0.5, 0.73, 1.0)); ptr += 36; 
+        objOffsets.numeral = { start: ptr, count: 36 }; colorCube(vec4(1.0, 1.0, 1.0, 1.0)); ptr += 36; 
+
+        objOffsets.carBody = { start: ptr, count: 36 }; colorCube(vec4(0.1, 0.3, 0.8, 1.0)); ptr += 36; 
+        objOffsets.truckBody = { start: ptr, count: 36 }; colorCube(vec4(0.8, 0.1, 0.1, 1.0)); ptr += 36; 
+        objOffsets.truckTrailer = { start: ptr, count: 36 }; colorCube(vec4(0.7, 0.7, 0.7, 1.0)); ptr += 36; 
+        objOffsets.motoBody = { start: ptr, count: 36 }; colorCube(vec4(0.1, 0.8, 0.3, 1.0)); ptr += 36; 
+        
+        objOffsets.wheel = { start: ptr, count: 36 }; colorCube(vec4(0.05, 0.05, 0.05, 1.0)); ptr += 36; 
+        objOffsets.window = { start: ptr, count: 36 }; colorCube(vec4(0.7, 0.9, 1.0, 1.0)); ptr += 36; 
+        objOffsets.headlight = { start: ptr, count: 36 }; colorCube(vec4(1.0, 1.0, 0.7, 1.0)); ptr += 36; 
+        
+        objOffsets.pole = { start: ptr, count: 36 }; colorCube(vec4(0.2, 0.2, 0.2, 1.0)); ptr += 36;
+        objOffsets.bulb = { start: ptr, count: 36 }; colorCube(vec4(1.0, 1.0, 0.8, 1.0)); ptr += 36;
+    }
+
+    let gl, program, canvas; 
+    let modelViewLoc, projectionLoc, lightPos1Loc, intensity1Loc, lightPos2Loc, intensity2Loc, isParkZoneLoc, textureTypeLoc;
+    
+    let score = 0;
+    let camMode = 'chase'; 
+    let keys = { w:false, a:false, s:false, d:false };
+    
+    let chaseDist = 15.0, chaseHeight = 8.0;
+    let freeCam = { rotX: 0, rotY: 0, dist: 35 };
+    let isDragging = false, lastMouseX, lastMouseY;
+
+    const VALET_ZONE = { minX: -26, maxX: -4, minZ: 4, maxZ: 24 }; 
+    const ROAD_ZONE =  { minX: -4, maxX: 16, minZ: -16, maxZ: 24 }; 
+    
+    const VALET_SLOTS = [
+        { x: -21, z: 14, rot: 90 }, { x: -14, z: 14, rot: 90 }, { x: -7, z: 14, rot: 90 } 
+    ];
+    
+    let PARK_SLOTS = []; 
+
+    let lightLevel = 1, maxLightLevel = 5, nearLamp = false;
+    const LIGHT1_POS = { x: 18, z: 12 }; 
+    const LIGHT2_POS = { x: 28, z: 12 }; 
+    
+    let valetVehicles = [];
+    let parkedVehicles = [];
+    let activeIdx = 0;
+
+    function spawnVehicleForSlot(idx, forceType = null) {
+        let types = ['car', 'truck', 'moto'];
+        let sizes = { 'car': [2.0, 1.0, 4.0], 'truck': [3.0, 2.5, 6.0], 'moto': [0.6, 1.2, 2.0] };
+        let type = forceType ? forceType : types[Math.floor(Math.random() * types.length)];
+        return {
+            id: idx, type: type, x: VALET_SLOTS[idx].x, z: VALET_SLOTS[idx].z,
+            rot: VALET_SLOTS[idx].rot, s: sizes[type]
+        };
+    }
+
+    function updateParkSlots() {
+        PARK_SLOTS = [];
+        for(let i = 0; i < lightLevel; i++) {
+            let colX = 22 + (i * 8); 
+            PARK_SLOTS.push({ x: colX, z: 8, w: 4, h: 6 });
+            PARK_SLOTS.push({ x: colX, z: 0, w: 4, h: 6 });
+        }
+    }
+
+    window.onload = function init() {
+        canvas = document.getElementById("gl-canvas"); 
+        gl = canvas.getContext("webgl");
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.clearColor(0.05, 0.05, 0.05, 1.0); 
+        gl.enable(gl.DEPTH_TEST);
+
+        buildGeometry();
+
+        program = initShaders(gl, "vertex-shader", "fragment-shader");
+        gl.useProgram(program);
+
+        let nBuffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, nBuffer); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(normals), gl.STATIC_DRAW);
+        let vNormal = gl.getAttribLocation(program, "vNormal"); gl.vertexAttribPointer(vNormal, 3, gl.FLOAT, false, 0, 0); gl.enableVertexAttribArray(vNormal);
+
+        let cBuffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, cBuffer); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
+        let vColor = gl.getAttribLocation(program, "vColor"); gl.vertexAttribPointer(vColor, 4, gl.FLOAT, false, 0, 0); gl.enableVertexAttribArray(vColor);
+
+        let vBuffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vBuffer); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+        let vPosition = gl.getAttribLocation(program, "vPosition"); gl.vertexAttribPointer(vPosition, 4, gl.FLOAT, false, 0, 0); gl.enableVertexAttribArray(vPosition);
+
+        modelViewLoc = gl.getUniformLocation(program, "modelViewMatrix"); projectionLoc = gl.getUniformLocation(program, "projectionMatrix");
+        lightPos1Loc = gl.getUniformLocation(program, "lightPos1"); intensity1Loc = gl.getUniformLocation(program, "intensity1");
+        lightPos2Loc = gl.getUniformLocation(program, "lightPos2"); intensity2Loc = gl.getUniformLocation(program, "intensity2");
+        isParkZoneLoc = gl.getUniformLocation(program, "uIsParkZone");
+        textureTypeLoc = gl.getUniformLocation(program, "uTextureType"); // Yeni eklenen lokasyon
+
+        valetVehicles = [ spawnVehicleForSlot(0, 'car'), spawnVehicleForSlot(1, 'truck'), spawnVehicleForSlot(2, 'moto') ];
+        
+        updateParkSlots();
+
+        window.addEventListener('keydown', e => {
+            let key = e.key.toLowerCase();
+            keys[key] = true;
+            
+            if(key === '1') activeIdx = 0; if(key === '2') activeIdx = 1; if(key === '3') activeIdx = 2;
+            if(key === 'm') camMode = (camMode === 'chase') ? 'free' : 'chase';
+            if(key === 'p') attemptPark();
+
+            if(key === 'arrowright') {
+                if(nearLamp && lightLevel < maxLightLevel) {
+                    lightLevel++; 
+                    updateParkSlots(); 
+                    score -= 10; document.getElementById('scoreVal').innerText = score;
+                }
+            }
+            if(key === 'arrowleft') {
+                if(nearLamp && lightLevel > 1) {
+                    lightLevel--; 
+                    updateParkSlots(); 
+                    score += 10; document.getElementById('scoreVal').innerText = score;
+                }
+            }
+
+            if(key === 'arrowup' && camMode === 'chase') { chaseHeight += 0.5; e.preventDefault(); }
+            if(key === 'arrowdown' && camMode === 'chase') { chaseHeight -= 0.5; e.preventDefault(); }
+        });
+        
+        window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+
+        window.addEventListener('wheel', e => {
+            if(camMode === 'chase') {
+                chaseDist += e.deltaY * 0.01;
+                if(chaseDist < 5) chaseDist = 5; if(chaseDist > 35) chaseDist = 35;
+            }
+        });
+
+        canvas.addEventListener('mousedown', e => { isDragging = true; lastMouseX = e.clientX; lastMouseY = e.clientY; });
+        canvas.addEventListener('mouseup', () => isDragging = false);
+        canvas.addEventListener('mousemove', e => {
+            if(isDragging && camMode === 'free') {
+                freeCam.rotY += (e.clientX - lastMouseX) * 0.5; freeCam.rotX += (e.clientY - lastMouseY) * 0.5;
+                lastMouseX = e.clientX; lastMouseY = e.clientY;
+            }
+        });
+
+        render();
+    };
+
+    function showMessage(text, color) {
+        let msg = document.getElementById('message');
+        msg.innerText = text; msg.style.borderColor = color; msg.style.color = color; msg.style.display = "block";
+        setTimeout(() => msg.style.display = "none", 3500);
+    }
+
+    function getParkBounds() {
+        let wPark = 15 + (lightLevel - 1) * 8; 
+        let hPark = 15 + (lightLevel - 1) * 6; 
+        let centerX = 16 + (wPark / 2); 
+        return { w: wPark, h: hPark, x: centerX, z: 4 }; 
+    }
+
+    function isParkArea(x, z) { 
+        let b = getParkBounds();
+        return (x >= (b.x - b.w/2) && x <= (b.x + b.w/2) && z >= (b.z - b.h/2) && z <= (b.z + b.h/2)); 
+    }
+
+    function attemptPark() {
+        let v = valetVehicles[activeIdx];
+        
+        let inSlot = false;
+        for(let ps of PARK_SLOTS) {
+            if(Math.abs(v.x - ps.x) < (ps.w/2 + 1.0) && Math.abs(v.z - ps.z) < (ps.h/2 + 1.0)) {
+                inSlot = true; break;
+            }
+        }
+
+        if(!inSlot) {
+            showMessage("HATA: Aracı bir MAVİ SLOT'un üzerine bırakmalısınız!", "#e67e22"); return;
+        }
+        if(!isParkArea(v.x, v.z)) {
+            score -= 20; document.getElementById('scoreVal').innerText = score;
+            showMessage("HATA: Bu slot karanlıkta! Lambayı genişletin. -20 Puan", "#e74c3c"); return;
+        }
+
+        score += 100; document.getElementById('scoreVal').innerText = score;
+        showMessage("HARİKA! Araç Park Edildi. Yeni Araç Geldi.", "#2ecc71");
+        
+        parkedVehicles.push({...v}); 
+        valetVehicles[activeIdx] = spawnVehicleForSlot(activeIdx); 
+    }
+
+    // drawObj fonksiyonuna uTextureType parametresi entegre edildi
+    function drawObj(name, matrix, isDark = false, texType = 0.0) {
+        gl.uniform1f(isParkZoneLoc, isDark ? 1.0 : 0.0);
+        gl.uniform1f(textureTypeLoc, texType); // Şadere o an hangi dokunun basılacağını söylüyor
+        gl.uniformMatrix4fv(modelViewLoc, false, flatten(matrix));
+        gl.drawArrays(gl.TRIANGLES, objOffsets[name].start, objOffsets[name].count);
+    }
+
+    function checkCollision(nx, nz) {
+        let inValet = (nx >= VALET_ZONE.minX && nx <= VALET_ZONE.maxX && nz >= VALET_ZONE.minZ && nz <= VALET_ZONE.maxZ);
+        let inRoad = (nx >= ROAD_ZONE.minX && nx <= ROAD_ZONE.maxX && nz >= ROAD_ZONE.minZ && nz <= ROAD_ZONE.maxZ);
+        let inPark = isParkArea(nx, nz); 
+        
+        if(!(inValet || inRoad || inPark)) return true; 
+
+        for(let i=0; i<valetVehicles.length; i++) {
+            if(i === activeIdx) continue;
+            let ov = valetVehicles[i];
+            if(Math.sqrt((nx - ov.x)*(nx - ov.x) + (nz - ov.z)*(nz - ov.z)) < 3.5) return true; 
+        }
+        for(let i=0; i<parkedVehicles.length; i++) {
+            let pv = parkedVehicles[i];
+            if(Math.sqrt((nx - pv.x)*(nx - pv.x) + (nz - pv.z)*(nz - pv.z)) < 3.5) return true; 
+        }
+
+        let dPole1 = Math.sqrt((nx - LIGHT1_POS.x)*(nx - LIGHT1_POS.x) + (nz - LIGHT1_POS.z)*(nz - LIGHT1_POS.z));
+        if(dPole1 < 1.5) return true;
+        let dPole2 = Math.sqrt((nx - LIGHT2_POS.x)*(nx - LIGHT2_POS.x) + (nz - LIGHT2_POS.z)*(nz - LIGHT2_POS.z));
+        if(dPole2 < 1.5) return true;
+
+        return false; 
+    }
+
+    function updatePhysics() {
+        let v = valetVehicles[activeIdx];
+        let move = 0; let rot = 0;
+
+        if(keys['w']) move = 0.25;  
+        if(keys['s']) move = -0.25; 
+
+        if(move !== 0) {
+            let dir = move > 0 ? 1 : -1;
+            if(keys['a']) rot = 3.5 * dir;
+            if(keys['d']) rot = -3.5 * dir;
+        }
+
+        let newRot = v.rot + rot;
+        let rad = newRot * Math.PI / 180.0;
+        let nextX = v.x + Math.sin(rad) * move;
+        let nextZ = v.z + Math.cos(rad) * move;
+
+        if(!checkCollision(nextX, nextZ)) {
+            v.x = nextX; v.z = nextZ; v.rot = newRot;
+        }
+
+        let distToLamp = Math.sqrt(Math.pow(v.x - LIGHT2_POS.x, 2) + Math.pow(v.z - LIGHT2_POS.z, 2));
+        nearLamp = (distToLamp < 12.0);
+        
+        let lampStatus = document.getElementById('lampStatus');
+        if(nearLamp) {
+            lampStatus.innerHTML = 'Lamba Paneli Aktif<br><span style="font-size: 13px; font-weight: normal; color: white;">Sağ (→) / Sol (←) oklarla Alanı ve Slotları Yönet (-10 Puan)</span>';
+            lampStatus.style.color = "#2ecc71"; lampStatus.style.borderColor = "#2ecc71";
+        } else {
+            lampStatus.innerHTML = "Lamba Paneli (Direğe Yaklaşın)";
+            lampStatus.style.color = "#e74c3c"; lampStatus.style.borderColor = "#e74c3c";
+        }
+    }
+
+    function drawDetailedVehicle(veh, cMatrix, isDark) {
+        let mVeh = translate(veh.x, veh.s[1]/2, veh.z);
+        mVeh = mult(mVeh, rotateY(veh.rot));
+        
+        if (veh.type === 'car') {
+            // Araba gövdesine 1.0 doku kodu (Dama Tahtası) uygulandı
+            let mBody = mult(mVeh, scalem(veh.s[0], veh.s[1]*0.6, veh.s[2])); drawObj('carBody', mult(cMatrix, mBody), isDark, 1.0);
+            let mCab = mult(mVeh, mult(translate(0, veh.s[1]*0.6, -0.2), scalem(veh.s[0]*0.9, veh.s[1]*0.5, veh.s[2]*0.5))); drawObj('window', mult(cMatrix, mCab), isDark, 0.0);
+            let wS = scalem(0.3, 0.4, 0.4);
+            drawObj('wheel', mult(cMatrix, mult(mVeh, mult(translate(1, -0.3, 1.2), wS))), isDark, 0.0); drawObj('wheel', mult(cMatrix, mult(mVeh, mult(translate(-1, -0.3, 1.2), wS))), isDark, 0.0);
+            drawObj('wheel', mult(cMatrix, mult(mVeh, mult(translate(1, -0.3, -1.2), wS))), isDark, 0.0); drawObj('wheel', mult(cMatrix, mult(mVeh, mult(translate(-1, -0.3, -1.2), wS))), isDark, 0.0);
+        } else if (veh.type === 'truck') {
+            let mCab = mult(mVeh, mult(translate(0, 0, 1.5), scalem(veh.s[0], veh.s[1], veh.s[2]*0.4))); drawObj('truckBody', mult(cMatrix, mCab), isDark, 0.0);
+            // Kamyon kasasına 2.0 doku kodu (Yarış Çizgileri) uygulandı
+            let mTrail = mult(mVeh, mult(translate(0, 0, -1.5), scalem(veh.s[0]*0.9, veh.s[1]*1.1, veh.s[2]*0.6))); drawObj('truckTrailer', mult(cMatrix, mTrail), isDark, 2.0);
+            let wS = scalem(0.4, 0.6, 0.6);
+            drawObj('wheel', mult(cMatrix, mult(mVeh, mult(translate(1.5, -0.6, 2.0), wS))), isDark, 0.0); drawObj('wheel', mult(cMatrix, mult(mVeh, mult(translate(-1.5, -0.6, 2.0), wS))), isDark, 0.0);
+            drawObj('wheel', mult(cMatrix, mult(mVeh, mult(translate(1.5, -0.6, -1.0), wS))), isDark, 0.0); drawObj('wheel', mult(cMatrix, mult(mVeh, mult(translate(-1.5, -0.6, -1.0), wS))), isDark, 0.0);
+            drawObj('wheel', mult(cMatrix, mult(mVeh, mult(translate(1.5, -0.6, -2.5), wS))), isDark, 0.0); drawObj('wheel', mult(cMatrix, mult(mVeh, mult(translate(-1.5, -0.6, -2.5), wS))), isDark, 0.0);
+        } else if (veh.type === 'moto') {
+            // Motosiklet gövdesine 3.0 doku kodu (Izgara Deseni) uygulandı
+            let mBody = mult(mVeh, scalem(veh.s[0], veh.s[1], veh.s[2])); drawObj('motoBody', mult(cMatrix, mBody), isDark, 3.0);
+            let wS = scalem(0.2, 0.6, 0.6);
+            drawObj('wheel', mult(cMatrix, mult(mVeh, mult(translate(0, -0.4, 0.8), wS))), isDark, 0.0); drawObj('wheel', mult(cMatrix, mult(mVeh, mult(translate(0, -0.4, -0.8), wS))), isDark, 0.0);
+        }
+        let mHeadlight = mult(mVeh, translate(0, 0, veh.s[2]/2 + 0.05)); mHeadlight = mult(mHeadlight, scalem(veh.s[0]*0.8, 0.2, 0.1));
+        drawObj('headlight', mult(cMatrix, mHeadlight), isDark, 0.0);
+    }
+
+    function render() {
+        updatePhysics();
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        let pMatrix = perspective(50, canvas.width / canvas.height, 0.1, 200.0);
+        gl.uniformMatrix4fv(projectionLoc, false, flatten(pMatrix));
+
+        let activeVeh = valetVehicles[activeIdx];
+        let eye, at, up = vec3(0, 1, 0);
+
+        if(camMode === 'chase') {
+            let rad = activeVeh.rot * Math.PI / 180.0;
+            eye = vec3(activeVeh.x - Math.sin(rad)*chaseDist, chaseHeight, activeVeh.z - Math.cos(rad)*chaseDist);
+            at = vec3(activeVeh.x, 0, activeVeh.z);
+        } else {
+            let rX = freeCam.rotX * Math.PI / 180.0; let rY = freeCam.rotY * Math.PI / 180.0;
+            eye = vec3(freeCam.dist * Math.cos(rX) * Math.sin(rY), freeCam.dist * Math.sin(rX) + 20.0, freeCam.dist * Math.cos(rX) * Math.cos(rY));
+            at = vec3(5, 0, 0); 
+        }
+        let cMatrix = lookAt(eye, at, up);
+
+        gl.uniform4fv(lightPos1Loc, flatten(vec4(LIGHT1_POS.x, 8.0, LIGHT1_POS.z, 1.0))); gl.uniform1f(intensity1Loc, 2.5); 
+        gl.uniform4fv(lightPos2Loc, flatten(vec4(LIGHT2_POS.x, 10.0, LIGHT2_POS.z, 1.0))); gl.uniform1f(intensity2Loc, lightLevel * 1.5); 
+
+        let pb = getParkBounds();
+
+        drawObj('brown', mult(cMatrix, mult(translate(0, -0.5, 0), scalem(120, 1, 120))), false, 0.0);
+        drawObj('yellow', mult(cMatrix, mult(translate(-14, 0.01, 14), scalem(20, 0.1, 20))), false, 0.0);
+        drawObj('grey', mult(cMatrix, mult(translate(6, 0.02, 4), scalem(20, 0.1, 40))), false, 0.0);
+        drawObj('green', mult(cMatrix, mult(translate(pb.x, 0.03, pb.z), scalem(pb.w, 0.1, pb.h))), true, 0.0); 
+
+        for(let i = 0; i < VALET_SLOTS.length; i++) {
+            let vs = VALET_SLOTS[i];
+            drawObj('valetSlot', mult(cMatrix, mult(translate(vs.x, 0.04, vs.z), scalem(4, 0.1, 6))), false, 0.0);
+            
+            let numLines = i + 1;
+            let spacing = 0.6; 
+            let startX = vs.x - ((numLines - 1) * spacing) / 2; 
+            
+            for(let j = 0; j < numLines; j++) {
+                let lineX = startX + j * spacing;
+                let mLine = mult(cMatrix, mult(translate(lineX, 0.05, vs.z + 2.0), scalem(0.2, 0.1, 1.2)));
+                drawObj('numeral', mLine, false, 0.0);
+            }
+        }
+
+        for(let ps of PARK_SLOTS) {
+            drawObj('parkSlot', mult(cMatrix, mult(translate(ps.x, 0.05, ps.z), scalem(ps.w, 0.1, ps.h))), true, 0.0);
+        }
+
+        drawObj('pole', mult(cMatrix, mult(translate(LIGHT1_POS.x, 4, LIGHT1_POS.z), scalem(0.4, 8, 0.4))), true, 0.0);
+        drawObj('bulb', mult(cMatrix, mult(translate(LIGHT1_POS.x, 8, LIGHT1_POS.z), scalem(1, 1, 1))), true, 0.0);
+        drawObj('pole', mult(cMatrix, mult(translate(LIGHT2_POS.x, 5, LIGHT2_POS.z), scalem(0.4, 10, 0.4))), true, 0.0);
+        if(lightLevel > 0) drawObj('bulb', mult(cMatrix, mult(translate(LIGHT2_POS.x, 10.0, LIGHT2_POS.z), scalem(1.2, 1.2, 1.2))), true, 0.0);
+
+        for(let i=0; i<valetVehicles.length; i++) {
+            let isDark = isParkArea(valetVehicles[i].x, valetVehicles[i].z);
+            drawDetailedVehicle(valetVehicles[i], cMatrix, isDark);
+        }
+        for(let i=0; i<parkedVehicles.length; i++) {
+            let isDark = isParkArea(parkedVehicles[i].x, parkedVehicles[i].z); 
+            drawDetailedVehicle(parkedVehicles[i], cMatrix, isDark);
+        }
+
+        requestAnimationFrame(render);
+    }
+</script>
+
+</body>
+</html>
